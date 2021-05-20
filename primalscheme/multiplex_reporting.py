@@ -2,6 +2,8 @@ import logging
 import os
 import pickle
 
+import pandas as pd
+
 from Bio import SeqIO
 from Bio.Graphics import GenomeDiagram
 from Bio.SeqFeature import FeatureLocation, SeqFeature
@@ -9,6 +11,7 @@ from reportlab.lib import colors
 
 from .SMARTplex import SMARTplex
 from .multiplex import MultiplexScheme
+from . import settings
 
 logger = logging.getLogger('Primal Log')
 
@@ -20,13 +23,13 @@ class MultiplexReporter(MultiplexScheme):
         logger.info('Writing BED')
         filepath = os.path.join(path, '{}.scheme.bed'.format(self.prefix))
         with open(filepath, 'w') as bedhandle:
-            for r in self.regions:
+            for r in self.segment_regions:
                 print(*map(str,
-                           [self.primary_reference.id, r.top_pair.left.start,
+                           [self.primary_reference(r.segment_id).id, r.top_pair.left.start,
                             r.top_pair.left.end, r.top_pair.left.name, r.pool]
                            ), sep='\t', file=bedhandle)
                 print(*map(str,
-                           [self.primary_reference.id, r.top_pair.right.end,
+                           [self.primary_reference(r.segment_id).id, r.top_pair.right.end,
                             r.top_pair.right.start, r.top_pair.right.name,
                             r.pool]),
                       sep='\t', file=bedhandle)
@@ -37,7 +40,7 @@ class MultiplexReporter(MultiplexScheme):
         with open(filepath, 'w') as tsvhandle:
             print(*['name', 'pool', 'seq', 'length', '%gc', 'tm (use 65)'],
                   sep='\t', file=tsvhandle)
-            for r in self.regions:
+            for r in self.segment_regions:
                 left = r.top_pair.left
                 right = r.top_pair.right
                 print(*map(str,
@@ -55,13 +58,93 @@ class MultiplexReporter(MultiplexScheme):
                                     '%.2f' % alt.gc, '%.2f' % alt.tm]),
                               sep='\t', file=tsvhandle)
 
+    def write_oPools(self, path='./'):
+        logger.info('Writing oPools')
+        opool_oligos = []
+        for bc in self.good_barcodes:
+            filepath = os.path.join(path, '{}.{}.RToligos.oPools.tsv'.format(
+                    self.prefix, bc))
+            with open(filepath, 'w') as tsvhandle:
+                print(*['name', 'seq'], sep='\t', file=tsvhandle)
+                for r in self.segment_regions:
+                    right = r.top_pair.right
+                    r_seq = r.right_tail + 'NNNN' + bc + right.seq
+                    print(*map(str, [right.name, r_seq]),
+                          sep='\t', file=tsvhandle)
+                    opool_oligos.append(['RT_pool_'+bc,r_seq])
+                    # ensure both endswitch region primers go into RT
+                    if r.is_endswitch_region:
+                        left = r.top_pair.left
+                        l_seq = r.left_tail + 'NNNN' + bc + left.seq
+                        print(*map(str, [left.name, l_seq]),
+                              sep='\t', file=tsvhandle)
+                        opool_oligos.append(['RT_pool_'+bc,l_seq])
+
+
+        filepath = os.path.join(path, '{}.2ndstrand_1.oPools.tsv'.format(
+                self.prefix))
+        with open(filepath, 'w') as tsvhandle:
+            print(*['name', 'seq'], sep='\t', file=tsvhandle)
+            for r in self.segment_regions:
+                if r.region_num % 2 == 0: continue
+                if r.is_endswitch_region: continue
+                left = r.top_pair.left
+                l_seq = r.left_tail + left.seq
+                print(*map(str, [left.name, l_seq]),
+                      sep='\t', file=tsvhandle)
+                opool_oligos.append(['2ndstrand_1_pool',l_seq])
+
+        filepath = os.path.join(path, '{}.2ndstrand_2.oPools.tsv'.format(
+                self.prefix))
+        with open(filepath, 'w') as tsvhandle:
+            print(*['name', 'seq'], sep='\t', file=tsvhandle)
+            for r in self.segment_regions:
+                if r.region_num % 2 == 1: continue
+                if r.is_endswitch_region: continue
+                left = r.top_pair.left
+                l_seq = r.left_tail + left.seq
+                print(*map(str, [left.name, l_seq]),
+                      sep='\t', file=tsvhandle)
+                opool_oligos.append(['2ndstrand_2_pool',l_seq])
+
+        filepath = os.path.join(path, '{}.opools_for_idt.xlsx'.format(
+                self.prefix))
+        opool_df = pd.DataFrame(opool_oligos, columns=['Pool name','Sequence'])
+        opool_df.to_excel(filepath, sheet_name='Sheet1', index=False)
+
+        filepath = os.path.join(path, '{}.tsoligo.oPools.tsv'.format(
+                self.prefix))
+        with open(filepath, 'w') as tsvhandle:
+            print(*['name', 'seq'], sep='\t', file=tsvhandle)
+            print('ts_oligo_P5\t/5Me-isodC//iisodG//iMe-isodC/'+
+                    settings.TAIL_P5+'rGrGrG', file=tsvhandle)
+
+        filepath = os.path.join(path, '{}.enrichment.oPools.tsv'.format(
+                self.prefix))
+        # columns for IDT bulk entry are name, sequence, scale, purification
+        with open(filepath, 'w') as tsvhandle:
+            # write the N7 enrichment barcode oligos
+            for bc in settings.ENRICHMENT_BARCODES_N7:
+                oligo_name = self.prefix+"_N7_"+bc
+                n7_oligo = settings.ENRICHMENT_F7_STUB + \
+                    settings.ENRICHMENT_BARCODES_N7[bc] + \
+                    settings.ENRICHMENT_N7_STUB
+                print(oligo_name+'\t'+n7_oligo+'\t4nmU\tSTD', file=tsvhandle)
+            # and the P5 enrichment barcode oligos
+            for bc in settings.ENRICHMENT_BARCODES_P5:
+                oligo_name = self.prefix+"_P5_"+bc
+                p5_oligo = settings.ENRICHMENT_P5_STUB + \
+                    settings.ENRICHMENT_BARCODES_P5[bc] + \
+                    settings.ENRICHMENT_P5_STUB
+                print(oligo_name+'\t'+p5_oligo+'\t4nmU\tSTD', file=tsvhandle)
+
     def write_SMARTplex(self, path='./'):
         logger.info('Writing SMARTplex')
         filepath = os.path.join(path, '{}_SMARTplex.tsv'.format(self.prefix))
         with open(filepath, 'w') as tsvhandle:
             print(*['name', 'fullseq', 'tm (use 52)', 'seq', 'subseq',
                     'lensubseq', 'lenmatch'], sep='\t', file=tsvhandle)
-            for r in self.regions:
+            for r in self.segment_regions:
                 right = r.top_pair.right
                 name = '{}_{}_SMARTplex'.format(self.prefix, r.region_num)
                 RTprimer, thermo, subseq, lensubseq, lenmatch = SMARTplex(
@@ -74,13 +157,14 @@ class MultiplexReporter(MultiplexScheme):
         logger.info('Writing pickles')
         filepath = os.path.join(path, '{}.pickle'.format(self.prefix))
         with open(filepath, 'wb') as pickleobj:
-            pickle.dump(self.regions, pickleobj)
+            pickle.dump(self.segment_regions, pickleobj)
 
     def write_refs(self, path='./'):
         logger.info('Writing references')
         filepath = os.path.join(path, '{}.reference.fasta'.format(self.prefix))
         with open(filepath, 'w'):
-            SeqIO.write(self.references, filepath, 'fasta')
+            for refset in self.references:
+                SeqIO.write(refset, filepath, 'fasta')
 
     def apply_to_window(self, sequence, window_size, function, step=None):
         """

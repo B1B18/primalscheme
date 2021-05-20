@@ -22,13 +22,15 @@ def multiplex(args):
         args.references, args.amplicon_length, min_overlap=args.min_overlap,
         max_gap=args.max_gap, max_alts=args.max_alts,
         max_candidates=args.max_candidates, step_size=args.step_size,
-        max_variation=args.max_variation, prefix=args.prefix)
+        max_variation=args.max_variation, prefix=args.prefix,
+        flanks=args.flanks)
     scheme.write_bed(args.output_path)
     scheme.write_pickle(args.output_path)
     scheme.write_tsv(args.output_path)
+    scheme.write_oPools(args.output_path)
     scheme.write_SMARTplex(args.output_path)
     scheme.write_refs(args.output_path)
-    scheme.write_schemadelica_plot(args.output_path)
+#    scheme.write_schemadelica_plot(args.output_path) #TODO: fix this for multi-seg
 
 
 def smart(args):
@@ -53,9 +55,11 @@ def main():
     parser_scheme = subparsers.add_parser(
         'multiplex', help='Multiplex PCR scheme')
     parser_scheme.add_argument(
-        'fasta', help='FASTA file')
+        'fasta', nargs='+', help='FASTA file')
     parser_scheme.add_argument(
-        'prefix', help='Prefix')
+        '--prefix', help='Prefix', required=True)
+    parser_scheme.add_argument(
+        '--unaligned-bed', help='.bed file containing the lengths of sequence that are outside the alignment of each segment, in order to design amplicons for template switch oligos', required=False)
     parser_scheme.add_argument(
         '--amplicon-length', type=int, default=400,
         help='Amplicon length (default: %(default)i)')
@@ -91,9 +95,9 @@ def main():
     parser_smart = subparsers.add_parser(
         'smart', help='SMART-plex scheme')
     parser_smart.add_argument(
-        'fasta', help='FASTA file')
+        'fasta', nargs='+', help='FASTA file')
     parser_smart.add_argument(
-        'prefix', help='Prefix')
+        '--prefix', help='Prefix', required=True)
     parser_smart.add_argument(
         '--amplicon-length', type=int, default=400,
         help='Amplicon length (default: %(default)i)')
@@ -112,10 +116,31 @@ def main():
     # Generate args
     args = parser.parse_args()
     args.references = []
-    for record in SeqIO.parse(open(args.fasta, 'r'), 'fasta'):
-        args.references.append(
-            SeqRecord(Seq(str(record.seq).replace('-', '').upper()),
-                      id=record.id, description=record.id))
+    for fasta in args.fasta:
+        current_refs = []
+        for record in SeqIO.parse(open(fasta, 'r'), 'fasta'):
+            # strips out gaps from sequence alignment
+            current_refs.append(
+                SeqRecord(Seq(str(record.seq).replace('-', '').upper()),
+                          id=record.id, description=record.id))
+        args.references.append(current_refs)
+
+    if args.unaligned_bed is not None:
+        left_flank_sizes = {}
+        right_flank_sizes = {}
+        bed_in = open(args.unaligned_bed, 'r')
+        for line in bed_in:
+            l = line.rstrip().split('\t')
+            flank_len = int(l[2]) - int(l[1]) + 1
+            if l[1] == '1':
+                left_flank_sizes[l[0]] = flank_len
+            else:
+                right_flank_sizes[l[0]] = flank_len
+        args.flanks = []
+        for seq in args.references:
+            if left_flank_sizes[seq[0].id] is None:
+                raise IOError('Reference sequence not found in unaligned .bed')
+            args.flanks.append((left_flank_sizes[seq[0].id],right_flank_sizes[seq[0].id]))
 
     # Check directory exists
     if os.path.isdir(args.output_path) and not args.force:
@@ -145,9 +170,6 @@ def main():
     logger.info('Primal scheme started...)')
     for arg in vars(args):
         logger.debug('{}: {}'.format(arg, str(vars(args)[arg])))
-
-    for r in args.references:
-        logger.info('Reference: {}'.format(r.id))
 
     # Run
     args.func(args)

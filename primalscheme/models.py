@@ -55,6 +55,39 @@ class CandidatePrimer(Primer):
         else:
             return self.start - self.length
 
+    # generalize a primer to a diverse set of target sequences
+    def diversify(self):
+        diff_counts = [0]*len(self.seq)
+        aln_count = 0
+        for a in self.alignments:
+            if a.aln_ref is None: continue
+            aln_count += 1
+        for a in self.alignments:
+            if a.aln_ref is None: continue
+            qpos = 0
+            for i in range(len(a.aln_query)):
+                if a.aln_ref[i] != a.aln_query[i]:
+                    diff_counts[qpos] += 1 / aln_count
+                if a.aln_query[i] != '-': qpos += 1
+
+        diff_sort = []
+        # -1 because IDT's opools product does not support N at the 3' end
+        for j in range(len(diff_counts)-1):
+            diff_sort.append((diff_counts[j],j))
+        diff_sort.sort(reverse=True)
+
+        # allow up to six degenerate sites
+        seqlist = list(self.seq)
+        resolved = 0
+        for d in range(6):
+            if diff_sort[d][0] < settings.ACCEPTABLE_DIVERGENCE:
+                break  # not worth adding degeneracy for low diversity sites
+            seqlist[diff_sort[d][1]] = 'N'
+            resolved += diff_sort[d][0]
+        self.seq = ''.join(seqlist)
+        resolution = 'degeneracy accommodates {frac:.4f}% of diversity'.format(
+                frac=100*(resolved / sum(diff_counts)))
+        logger.info(resolution)
 
 class CandidatePrimerPair(object):
     """A pair of candidate primers for a region."""
@@ -73,8 +106,8 @@ class CandidatePrimerPair(object):
 
 class Region(object):
     """A region that forms part of a scheme."""
-    def __init__(self, region_num, chunk_start, candidate_pairs, references,
-                 prefix, max_alts=0):
+    def __init__(self, region_num, chunk_start, candidate_pairs, segment_id,
+                 references, prefix, max_alts=0, is_endswitch_region=False):
         self.region_num = region_num
         self.prefix = prefix
         if self.region_num % 2 == 0:
@@ -83,15 +116,29 @@ class Region(object):
             self.pool = '%s_1' % (self.prefix)
         self.candidate_pairs = candidate_pairs
         self.alternates = []
+        self.segment_id = segment_id
+        self.is_endswitch_region = is_endswitch_region
+
+        # alternate the 5' adapter tail to support a single RT reaction
+        if self.region_num % 2 == 0:
+            self.left_tail = settings.TAIL_P5
+            self.right_tail = settings.TAIL_N7
+        else:
+            self.left_tail = settings.TAIL_N7
+            self.right_tail = settings.TAIL_P5
+
+        # the endswitch region adjoins the last region & the first region
+        if self.is_endswitch_region:
+            self.right_tail = settings.TAIL_N7
+
+        # Align candidate pairs
+        for pair in self.candidate_pairs:
+            pair.left.align(references[segment_id])
+            pair.right.align(references[segment_id])
 
         # Sort by highest scoring pair with the rightmost position
         self.candidate_pairs.sort(key=lambda x: (x.mean_percent_identity,
                                                  x.right.end), reverse=True)
-
-        # Align candidate pairs
-        for pair in self.candidate_pairs:
-            pair.left.align(references)
-            pair.right.align(references)
 
         # Get a list of alts based on the alignments
         left_alts = [each.aln_ref for each in
@@ -104,14 +151,18 @@ class Region(object):
         left_alts_filt = [str(alt) for alt in left_alts if alt is not None]
         right_alts_filt = [str(alt) for alt in right_alts if alt is not None]
 
+        # discard any primers that align with a gap
+        left_alts_filt2 = [alt for alt in left_alts_filt if alt.find('-') < 0]
+        right_alts_filt2 = [alt for alt in right_alts_filt if alt.find('-') < 0]
+
         # Get the counts for the alts to prioritise
-        left_alts_counts = [(alt, left_alts_filt.count(alt))
-                            for alt in set(left_alts_filt)]
+        left_alts_counts = [(alt, left_alts_filt2.count(alt))
+                            for alt in set(left_alts_filt2)]
         left_alts_counts.sort(key=lambda x: x[1], reverse=True)
 
         # Make tuples of unique primers and frequency and sort
-        right_alts_counts = [(alt, right_alts_filt.count(alt))
-                             for alt in set(right_alts_filt)]
+        right_alts_counts = [(alt, right_alts_filt2.count(alt))
+                             for alt in set(right_alts_filt2)]
         right_alts_counts.sort(key=lambda x: x[1], reverse=True)
 
         # For up to max_alts and if it occurs more than once generate a
@@ -126,7 +177,7 @@ class Region(object):
                     self.candidate_pairs[0].left.name + '_alt%i' % (n+1),
                     left_alt[0],
                     self.candidate_pairs[0].left.start
-                ).align(references)
+                ).align(references[segment_id])
                 self.alternates.append(left)
 
         for n, right_alt in enumerate(right_alts_counts):
@@ -138,7 +189,7 @@ class Region(object):
                     self.candidate_pairs[0].right.name + '_alt%i' % (n+1),
                     right_alt[0],
                     self.candidate_pairs[0].right.start
-                ).align(references)
+                ).align(references[segment_id])
                 self.alternates.append(right)
 
     @property
@@ -171,11 +222,11 @@ class CAlignment(object):
 
         if primer.direction == 'LEFT':
             alignment_result = adapter_alignment(
-                str(ref.seq), str(primer.seq), [2, -1, -2, -1])
+                str(ref.seq), str(primer.seq), [2, -1, -10, -10])
         elif primer.direction == 'RIGHT':
             alignment_result = adapter_alignment(
                 str(ref.seq.reverse_complement()),
-                str(primer.seq), [2, -1, -2, -1])
+                str(primer.seq), [2, -1, -10, -10])
         result_parts = alignment_result.split(',')
         ref_start = int(result_parts[0])
         full_primer_percent_identity = float(result_parts[6])
@@ -198,6 +249,12 @@ class CAlignment(object):
 
             # Percentage identity for glocal alignment
             self.percent_identity = full_primer_percent_identity
+            # indels can not be fixed by adding degenerate sites to an oligo
+            # so we strongly prefer primers that align without indels to
+            # the set of target sequences
+            if self.aln_query is not None and self.aln_ref is not None and \
+                (self.aln_query.find('-') >= 0 or self.aln_ref.find('-') >=0):
+                self.percent_identity = 0
 
             # Get alignment strings
             self.aln_query = result_parts[8][ref_start:ref_end]
