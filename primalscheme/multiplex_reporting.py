@@ -133,7 +133,7 @@ class MultiplexReporter(MultiplexScheme):
             # and the P5 enrichment barcode oligos
             for bc in settings.ENRICHMENT_BARCODES_P5:
                 oligo_name = self.prefix+"_P5_"+bc
-                p5_oligo = settings.ENRICHMENT_P5_STUB + \
+                p5_oligo = settings.ENRICHMENT_F5_STUB + \
                     settings.ENRICHMENT_BARCODES_P5[bc] + \
                     settings.ENRICHMENT_P5_STUB
                 print(oligo_name+'\t'+p5_oligo+'\t4nmU\tSTD', file=tsvhandle)
