@@ -161,6 +161,8 @@ MAX_HOMODIMER_TM = 45
 # a position then attempt to introduce degeneracy in the oligo to accommodate
 ACCEPTABLE_DIVERGENCE = 0.02
 
+MAX_DEGENERATES = 4
+
 # Length 22, 30, 24.43
 # Tm 59.96, 62.72, 61.33
 # GC 33.33, 54.55, 45.71
