@@ -79,7 +79,7 @@ class CandidatePrimer(Primer):
         # allow up to six degenerate sites
         seqlist = list(self.seq)
         resolved = 0
-        for d in range(6):
+        for d in range(settings.MAX_DEGENERATES):
             if diff_sort[d][0] < settings.ACCEPTABLE_DIVERGENCE:
                 break  # not worth adding degeneracy for low diversity sites
             seqlist[diff_sort[d][1]] = 'N'
